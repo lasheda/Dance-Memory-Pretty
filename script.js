@@ -1,0 +1,1 @@
+// script.js actualizado con coreografía simple corregida, velocidad y volumen sincronizados\n

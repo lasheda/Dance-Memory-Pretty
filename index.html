@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎵 Dance Memory Coach</title>
+  <meta name="theme-color" content="#111111">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>🎵 Dance Memory Coach</h1>
+
+  <section id="lists">
+    <input type="text" id="listNameInput" placeholder="Nombre de nueva lista">
+    <button id="addListBtn">Agregar lista</button>
+    <select id="listSelect"></select>
+    <button id="editListBtn">🖊️ Renombrar</button>
+    <button id="deleteListBtn">🗑️ Borrar</button>
+  </section>
+
+  <section id="steps">
+    <input type="text" id="nameInput" placeholder="Nombre del paso">
+    <input type="number" id="timeInput" placeholder="Tiempos">
+    <button id="addStepBtn">Agregar paso</button>
+    <ul id="stepsList"></ul>
+  </section>
+
+  <section id="controls">
+    <button id="startBtn">▶ Iniciar</button>
+    <button id="stopBtn">⏸ Pausar</button>
+    <button id="resetBtn">🔄 Reset</button>
+    <label>Modo:
+      <select id="modeSelect">
+        <option value="normal">Normal</option>
+        <option value="loop">Bucle infinito</option>
+        <option value="random">Total random</option>
+        <option value="choreo">Coreografía simple</option>
+        <option value="choreoLoop">Coreografía loop</option>
+      </select>
+    </label>
+  </section>
+
+  <section id="config">
+    <div class="config-item">
+      <span>🚗</span>
+      <input type="number" id="speedInput" value="1.00" step="0.01" min="0.01" max="5">
+      <input type="range" id="speedSlider" value="1.00" step="0.01" min="0.01" max="5">
+    </div>
+    <div class="config-item">
+      <span>🔊</span>
+      <input type="number" id="volumeInput" value="100" step="1" min="0" max="100">
+      <input type="range" id="volumeSlider" value="1" step="0.01" min="0" max="1">
+    </div>
+  </section>
+
+  <section id="fileControls">
+    <button id="saveBtn">Guardar</button>
+    <button id="importBtn">Importar</button>
+    <input type="file" id="importFile" accept=".csv" style="display:none;">
+    <button id="exportBtn">Exportar</button>
+  </section>
+
+  <section id="display">
+    <div id="currentStep">Esperando...</div>
+  </section>
+
+  <script src="script.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js");
+    }
+  </script>
+</body>
+</html>
