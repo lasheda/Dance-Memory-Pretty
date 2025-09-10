@@ -1,0 +1,57 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 20px;
+  background: #111;
+  color: #eee;
+  text-align: center;
+}
+h1 {
+  color: #4db8ff;
+}
+button {
+  margin: 5px;
+  padding: 10px 15px;
+  font-size: 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #333;
+  color: #fff;
+}
+button:hover {
+  background: #555;
+}
+#stepsList {
+  list-style: none;
+  padding: 0;
+}
+#stepsList li {
+  margin: 5px 0;
+  padding: 5px;
+  background: #222;
+  border-radius: 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+#currentStep {
+  margin-top: 20px;
+  font-size: 28px;
+  font-weight: bold;
+  padding: 20px;
+  background: #222;
+  border-radius: 10px;
+  box-shadow: 0 0 15px #000;
+}
+.step-controls button {
+  margin-left: 5px;
+  padding: 5px;
+  font-size: 14px;
+}
+.config-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 10px 0;
+}
