@@ -13,10 +13,13 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // No interceptar archivos locales ni blobs
-  if (e.request.url.startsWith('file:') || e.request.url.startsWith('blob:')) {
+  const url = new URL(e.request.url);
+
+  // Solo interceptar peticiones http(s) dentro del mismo origen
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return;
   }
+
   e.respondWith(
     caches.match(e.request).then((response) => response || fetch(e.request))
   );
