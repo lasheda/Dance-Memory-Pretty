@@ -1,7 +1,7 @@
 {
   "name": "🎵 Dance Memory Coach",
   "short_name": "DanceCoach",
-  "start_url": "/Dance-Memory-Pretty/index.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#111111",
   "theme_color": "#4db8ff",
