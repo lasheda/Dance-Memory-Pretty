@@ -1,10 +1,12 @@
-// JavaScript principal con reproductor y sincronización BPM
+// script.js completo — Listas + CSV + Reproductor mp3 + detección y seguimiento BPM
+
+// -------------------- Estado global --------------------
 let lists = JSON.parse(localStorage.getItem("lists")) || [];
 let usedSteps = [];
 let running = false;
 let wakeLock = null;
 
-// Referencias
+// Referencias DOM
 const listNameInput = document.getElementById("listNameInput");
 const addListBtn = document.getElementById("addListBtn");
 const editListBtn = document.getElementById("editListBtn");
@@ -27,13 +29,20 @@ const speedSlider = document.getElementById("speedSlider");
 const volumeSlider = document.getElementById("volumeSlider");
 const modeSelect = document.getElementById("modeSelect");
 
-// Música y sincronización
+// Música / BPM
 const musicFile = document.getElementById("musicFile");
 const musicPlayer = document.getElementById("musicPlayer");
 const syncToggle = document.getElementById("syncToggle");
-let bpmDetected = 120;
 
-// ----------------- FUNCIONES DE LISTAS Y PASOS -----------------
+// Datos de audio / detección
+let audioBufferGlobal = null;      // AudioBuffer decodificado
+let onsetTimes = [];               // array de instantes (s) donde hay onsets detectados
+let globalBPM = 120;               // BPM global detectado
+let bpmDetected = 120;             // BPM actual (suavizada)
+let bpmFollowInterval = null;      // id del interval que sigue el BPM local
+const BPM_SMOOTHING_ALPHA = 0.85;  // mayor = más suave (0..1) - usa para EMA
+
+// -------------------- Funciones listas y render --------------------
 function saveLocal() {
   localStorage.setItem("lists", JSON.stringify(lists));
 }
@@ -49,7 +58,6 @@ function renderLists() {
   renderSteps();
 }
 
-// Agregar lista
 addListBtn.addEventListener("click", () => {
   const name = listNameInput.value.trim();
   if (!name) return alert("Nombre inválido");
@@ -59,7 +67,6 @@ addListBtn.addEventListener("click", () => {
   renderLists();
 });
 
-// Renombrar lista
 editListBtn.addEventListener("click", () => {
   if (listSelect.value === "") return alert("Selecciona una lista");
   const listIndex = parseInt(listSelect.value);
@@ -71,7 +78,6 @@ editListBtn.addEventListener("click", () => {
   }
 });
 
-// Borrar lista
 deleteListBtn.addEventListener("click", () => {
   if (listSelect.value === "") return alert("Selecciona una lista");
   const listIndex = parseInt(listSelect.value);
@@ -84,7 +90,6 @@ deleteListBtn.addEventListener("click", () => {
 
 listSelect.addEventListener("change", renderSteps);
 
-// Agregar paso
 addStepBtn.addEventListener("click", () => {
   if (listSelect.value === "") return alert("Selecciona una lista");
   const stepName = nameInput.value.trim();
@@ -98,7 +103,6 @@ addStepBtn.addEventListener("click", () => {
   renderSteps();
 });
 
-// Renderizar pasos
 function renderSteps() {
   stepsList.innerHTML = "";
   if (listSelect.value === "") return;
@@ -160,7 +164,7 @@ function renderSteps() {
   });
 }
 
-// ----------------- IMPORT / EXPORT CSV -----------------
+// -------------------- Export / Import CSV (igual que antes) --------------------
 exportBtn.addEventListener("click", () => {
   let csv = "Lista,Nombre,Tiempos\n";
   lists.forEach(list => {
@@ -202,62 +206,225 @@ importFile.addEventListener("change", (e) => {
   reader.readAsText(file);
 });
 
-// ----------------- MÚSICA / BPM -----------------
+// -------------------- DETECCIÓN DE ONSETS / BPM (completa) --------------------
+/*
+  Algoritmo:
+  - Decodifica el archivo a AudioBuffer.
+  - Calcula energía por frames (frameSize/hop).
+  - Obtiene la diferencia positiva (novelty), suaviza y detecta picos (onsets).
+  - Calcula BPM global (mediana de IOIs).
+  - Luego, mientras suena la canción, calcula BPM local tomando onsets en ventana pasada (ej. 8s).
+*/
+
+async function analyzeFileForBeats(file) {
+  // decodificar el archivo
+  const arrayBuffer = await file.arrayBuffer();
+  const audioCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext || window.AudioContext)(1, 1, 44100);
+  // Usamos AudioContext normal para decodeAudioData
+  const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
+  // keep global buffer
+  audioBufferGlobal = audioBuffer;
+
+  const sampleRate = audioBuffer.sampleRate;
+  const channelData = audioBuffer.numberOfChannels > 0 ? audioBuffer.getChannelData(0) : audioBuffer.getChannelData(0);
+
+  // parámetros
+  const frameSize = 2048;
+  const hop = 512;
+  const energies = [];
+  for (let i = 0; i + frameSize < channelData.length; i += hop) {
+    let sum = 0;
+    for (let j = 0; j < frameSize; j++) {
+      const v = channelData[i + j];
+      sum += v * v;
+    }
+    energies.push(sum / frameSize);
+  }
+  // novelty (positive difference)
+  const novelty = [];
+  for (let i = 1; i < energies.length; i++) {
+    const diff = energies[i] - energies[i - 1];
+    novelty.push(Math.max(0, diff));
+  }
+  // suavizado simple (moving average)
+  const smooth = [];
+  const win = 3;
+  for (let i = 0; i < novelty.length; i++) {
+    let s = 0;
+    let count = 0;
+    for (let k = -Math.floor(win/2); k <= Math.floor(win/2); k++) {
+      const idx = i + k;
+      if (idx >= 0 && idx < novelty.length) { s += novelty[idx]; count++; }
+    }
+    smooth.push(s / count);
+  }
+  // umbral adaptativo
+  const mean = smooth.reduce((a,b)=>a+b,0) / smooth.length;
+  const std = Math.sqrt(smooth.map(v=>Math.pow(v-mean,2)).reduce((a,b)=>a+b,0)/smooth.length);
+  const threshold = mean + 0.5 * std; // factor empírico
+
+  // detección de picos locales
+  const peaks = [];
+  for (let i = 1; i < smooth.length - 1; i++) {
+    if (smooth[i] > threshold && smooth[i] > smooth[i-1] && smooth[i] > smooth[i+1]) {
+      peaks.push(i);
+    }
+  }
+
+  // convertir índices de frame a tiempos (s)
+  onsetTimes = peaks.map(p => (p * hop) / sampleRate);
+
+  // calcular IOIs (intervalos entre onsets) y BPM global (mediana)
+  const IOIs = [];
+  for (let i = 1; i < onsetTimes.length; i++) {
+    const dt = onsetTimes[i] - onsetTimes[i-1];
+    if (dt > 0.05 && dt < 2.0) IOIs.push(dt); // filtrar extremos
+  }
+  function median(arr) {
+    if (!arr.length) return null;
+    const s = arr.slice().sort((a,b)=>a-b);
+    const m = Math.floor(s.length/2);
+    if (s.length % 2 === 0) return (s[m-1]+s[m])/2;
+    return s[m];
+  }
+  const medIOI = median(IOIs) || (60/120); // fallback
+  globalBPM = Math.round(60 / medIOI);
+  bpmDetected = globalBPM; // inicializamos
+  console.log("análisis completado: onsets:", onsetTimes.length, "globalBPM:", globalBPM);
+  return { audioBuffer, onsetTimes, globalBPM };
+}
+
+// Calcula BPM local alrededor de timeSec usando onsets precomputados
+function computeLocalBPMAt(timeSec, windowSec = 8) {
+  if (!onsetTimes || onsetTimes.length < 2) return globalBPM;
+  const start = Math.max(0, timeSec - windowSec);
+  // consideramos onsets en (start, timeSec] (ventana pasada) — más robusto
+  const localOnsets = onsetTimes.filter(t => t >= start && t <= timeSec);
+  if (localOnsets.length < 2) {
+    // intentamos ampliar la ventana si hay pocos onsets
+    const wider = onsetTimes.filter(t => t >= Math.max(0, timeSec - windowSec*2) && t <= timeSec + 1);
+    if (wider.length < 2) return globalBPM;
+    const iois = [];
+    for (let i = 1; i < wider.length; i++) iois.push(wider[i] - wider[i-1]);
+    const med = median(iois);
+    return Math.round(60 / med);
+  } else {
+    const iois = [];
+    for (let i = 1; i < localOnsets.length; i++) iois.push(localOnsets[i] - localOnsets[i-1]);
+    const med = median(iois);
+    return Math.round(60 / med);
+  }
+
+  function median(arr) {
+    if (!arr.length) return null;
+    const s = arr.slice().sort((a,b)=>a-b);
+    const m = Math.floor(s.length/2);
+    return s.length % 2 === 0 ? (s[m-1]+s[m])/2 : s[m];
+  }
+}
+
+// Inicia seguimiento periódico del BPM (mientras suena)
+function startBpmFollow() {
+  stopBpmFollow();
+  // actualizar inmediatamente
+  if (!audioBufferGlobal || onsetTimes.length < 2) return;
+  bpmDetected = globalBPM;
+  // cada segundo calculamos BPM local en torno al currentTime
+  bpmFollowInterval = setInterval(() => {
+    if (musicPlayer.paused) return;
+    const t = musicPlayer.currentTime;
+    const localBPM = computeLocalBPMAt(t, 8) || globalBPM;
+    // suavizado exponencial
+    bpmDetected = Math.round((BPM_SMOOTHING_ALPHA * bpmDetected) + ((1 - BPM_SMOOTHING_ALPHA) * localBPM));
+    // convertir BPM -> velocidad (según tu semántica: velocidad = BPM / 60)
+    if (syncToggle.checked) {
+      const speed = (bpmDetected / 60);
+      // actualizar controles visuales y mantenerlos deshabilitados
+      speedInput.value = speed.toFixed(2);
+      speedSlider.value = speedInput.value;
+    }
+  }, 1000);
+}
+
+function stopBpmFollow() {
+  if (bpmFollowInterval) {
+    clearInterval(bpmFollowInterval);
+    bpmFollowInterval = null;
+  }
+}
+
+// -------------------- Handlers: carga/uso del mp3 --------------------
 musicFile.addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   musicPlayer.src = URL.createObjectURL(file);
 
-  if (syncToggle.checked) {
-    bpmDetected = await detectBPM(file);
-    speedInput.value = (bpmDetected / 120).toFixed(2);
-    speedSlider.value = speedInput.value;
+  // analizamos el archivo para detectar onsets y BPM global
+  try {
+    await analyzeFileForBeats(file);
+    // si el usuario tiene sync ON, fijamos la velocidad inicial
+    if (syncToggle.checked) {
+      const speed = (globalBPM / 60);
+      speedInput.value = speed.toFixed(2);
+      speedSlider.value = speedInput.value;
+      // desactivar inputs para que el usuario no los cambie mientras sincroniza
+      speedInput.disabled = true;
+      speedSlider.disabled = true;
+    } else {
+      speedInput.disabled = false;
+      speedSlider.disabled = false;
+    }
+  } catch (err) {
+    console.error("Error analizando audio:", err);
   }
 });
+
+musicPlayer.addEventListener('play', () => {
+  // si ya hemos analizado, iniciamos seguimiento; si no, intentamos analizar el archivo cargado
+  if (audioBufferGlobal && onsetTimes.length >= 2) {
+    startBpmFollow();
+  } else if (musicFile.files[0]) {
+    analyzeFileForBeats(musicFile.files[0]).then(() => startBpmFollow()).catch(()=>{});
+  }
+});
+
+musicPlayer.addEventListener('pause', () => stopBpmFollow());
+musicPlayer.addEventListener('ended', () => stopBpmFollow());
 
 syncToggle.addEventListener("change", () => {
-  if (syncToggle.checked && musicFile.files[0]) {
-    detectBPM(musicFile.files[0]).then(bpm => {
-      bpmDetected = bpm;
-      speedInput.value = (bpmDetected / 120).toFixed(2);
+  if (syncToggle.checked) {
+    // activar sincronización -> deshabilitar inputs y actualizar según BPM actual
+    speedInput.disabled = true;
+    speedSlider.disabled = true;
+    if (audioBufferGlobal && onsetTimes.length >= 2) {
+      // calcula bpm local ahora mismo
+      const t = musicPlayer.currentTime;
+      const local = computeLocalBPMAt(t, 8) || globalBPM;
+      bpmDetected = local;
+      const speed = (bpmDetected / 60);
+      speedInput.value = speed.toFixed(2);
       speedSlider.value = speedInput.value;
-    });
+    } else if (musicFile.files[0]) {
+      // si no hemos analizado aún, analizamos
+      analyzeFileForBeats(musicFile.files[0]).then(() => {
+        const speed = (globalBPM / 60);
+        speedInput.value = speed.toFixed(2);
+        speedSlider.value = speedInput.value;
+      }).catch(()=>{});
+    }
+  } else {
+    // desactivar sincronización -> reactivar inputs
+    speedInput.disabled = false;
+    speedSlider.disabled = false;
   }
 });
 
-async function detectBPM(file) {
-  return new Promise(resolve => {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const arrayBuffer = ev.target.result;
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      const rawData = audioBuffer.getChannelData(0);
-      const samples = 10000;
-      const blockSize = Math.floor(rawData.length / samples);
-      let peaks = [];
-      for (let i = 0; i < samples; i++) {
-        let sum = 0;
-        for (let j = 0; j < blockSize; j++) sum += Math.abs(rawData[i * blockSize + j]);
-        peaks.push(sum / blockSize);
-      }
-      let threshold = peaks.reduce((a, b) => a + b, 0) / peaks.length * 1.2;
-      let peakIndexes = peaks.map((v, i) => v > threshold ? i : null).filter(v => v !== null);
-      let intervals = [];
-      for (let i = 1; i < peakIndexes.length; i++) intervals.push((peakIndexes[i] - peakIndexes[i - 1]) * audioBuffer.duration / rawData.length);
-      let avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-      let bpm = Math.round(60 / avgInterval);
-      resolve(bpm);
-    };
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-// ----------------- CONTROLES DE VELOCIDAD -----------------
+// -------------------- Controles velocidad (manual) --------------------
 speedSlider.addEventListener("input", () => { speedInput.value = speedSlider.value; });
 speedInput.addEventListener("input", () => { speedSlider.value = speedInput.value; });
 
-// ----------------- RANDOMIZER PRINCIPAL -----------------
+// -------------------- Randomizer principal (usa velocidad actual) --------------------
 async function startRandomizer() {
   if (listSelect.value === "") return alert("Selecciona una lista");
   const listIndex = parseInt(listSelect.value);
@@ -269,7 +436,8 @@ async function startRandomizer() {
   }
 
   running = true;
-  if (!musicPlayer.paused) musicPlayer.play();
+  // si la música está cargada, intentamos reproducirla (no forzamos si está en pausa)
+  // musicPlayer.play(); // dejamos al usuario controlar reproducción si quiere
 
   while (running) {
     let step;
@@ -281,7 +449,8 @@ async function startRandomizer() {
       const stepIndex = Math.floor(Math.random() * usedSteps.length);
       step = usedSteps.splice(stepIndex, 1)[0];
     } else if (mode === "random") {
-      step = lists[listIndex].steps[Math.floor(Math.random() * lists[listIndex].steps.length)];
+      const stepIndex = Math.floor(Math.random() * lists[listIndex].steps.length);
+      step = lists[listIndex].steps[stepIndex];
     } else if (mode === "choreo" || mode === "choreoLoop") {
       if (usedSteps.length === 0) usedSteps = [...lists[listIndex].steps];
       step = usedSteps.shift();
@@ -291,22 +460,30 @@ async function startRandomizer() {
       }
     }
 
-    // Ajuste velocidad si sincronización activada
-    let speed = parseFloat(speedInput.value);
-    if (syncToggle.checked && bpmDetected) speed = bpmDetected / 120;
-
+    // calcular velocidad efectiva
+    let speed = parseFloat(speedInput.value) || 1;
+    if (syncToggle.checked && bpmDetected) {
+      // acorde a la semántica: velocidad = BPM / 60
+      speed = (bpmDetected / 60);
+    }
+    // duración en segundos: tiempos * (1 / velocidad)
     const duration = step.tiempos * (1 / speed);
+
     currentStep.textContent = step.name;
     sayText(step.name);
+
+    // esperar
     await new Promise(res => setTimeout(res, duration * 1000));
   }
+
   running = false;
   releaseWakeLock();
 }
 
-// ----------------- VOZ -----------------
+// -------------------- Voz --------------------
 function sayText(text) {
   if ("speechSynthesis" in window) {
+    // cancelamos solo si queremos evitar solapamientos de la misma app (puedes quitar cancel si prefieres que se acumulen)
     speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "es-ES";
@@ -315,7 +492,7 @@ function sayText(text) {
   }
 }
 
-// ----------------- WAKELOCK -----------------
+// -------------------- WakeLock --------------------
 async function requestWakeLock() {
   try {
     if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
@@ -329,12 +506,16 @@ function releaseWakeLock() {
   }
 }
 
-// ----------------- BOTONES INICIO / STOP / RESET -----------------
+// -------------------- Botones inicio/stop/reset --------------------
 startBtn.addEventListener("click", async () => {
   if (!running) {
     await requestWakeLock();
     startRandomizer();
-    if (!musicPlayer.paused) musicPlayer.play();
+    // si la música está cargada y se desea que empiece, el usuario puede pulsar play en el audio; no forzamos auto-play.
+    if (!musicPlayer.paused) {
+      // si ya está sonando, iniciamos seguimiento
+      startBpmFollow();
+    }
   }
 });
 
@@ -343,6 +524,7 @@ stopBtn.addEventListener("click", () => {
   releaseWakeLock();
   currentStep.textContent = "⏸ Pausado";
   musicPlayer.pause();
+  stopBpmFollow();
 });
 
 resetBtn.addEventListener("click", () => {
@@ -351,8 +533,21 @@ resetBtn.addEventListener("click", () => {
   usedSteps = [];
   currentStep.textContent = "🔄 Reiniciado";
   musicPlayer.currentTime = 0;
+  stopBpmFollow();
 });
 
-saveBtn.addEventListener("click", () => { saveLocal(); alert("Listas guardadas en memoria"); });
+saveBtn.addEventListener("click", () => {
+  saveLocal();
+  alert("Listas guardadas en memoria");
+});
 
-renderLists();
+// -------------------- Inicialización UI --------------------
+(function init() {
+  renderLists();
+  // desactivar inputs si sync por defecto está ON
+  if (syncToggle.checked) {
+    speedInput.disabled = true;
+    speedSlider.disabled = true;
+  }
+})();
+
